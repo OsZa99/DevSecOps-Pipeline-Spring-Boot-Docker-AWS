@@ -1,153 +1,210 @@
-# Projet d'Orchestration DevOps
+# DevSecOps Pipeline – Spring Boot, Docker & AWS
 
-## Aperçu du Projet
-Ce dépôt contient une orchestration Docker Compose pour un écosystème d'applications Spring Boot multi-conteneurs. Le projet démontre les principes DevOps avec la conteneurisation, l'orchestration, le proxy inverse, la gestion de base de données et l'analyse continue de la qualité du code.
+Application d'annuaire (« **Mon Annuaire Miage** ») exposant une API REST Spring Boot, conteneurisée avec Docker et livrée automatiquement sur AWS EC2 via une chaîne CI/CD GitHub Actions intégrant des contrôles de qualité et de sécurité (SonarCloud, Trivy).
+
+Le projet sert de démonstrateur d'une approche **DevSecOps** de bout en bout : tests automatisés, analyse statique, scan de vulnérabilités de l'image, publication sur Docker Hub, déploiement continu, reverse proxy, sauvegardes de base de données.
+
+## Fonctionnalités
+
+- API REST de consultation d'un annuaire de personnes (`GET /api/persons`).
+- Endpoint d'information de version (`GET /api/version`) permettant d'identifier l'instance qui répond.
+- Deux instances de l'application (`v1` et `v2`) exposées derrière un reverse proxy **Nginx**.
+- Base de données **MySQL** initialisée automatiquement au premier démarrage.
+- **Sauvegardes automatiques** de la base toutes les 12 heures.
+- Interface d'administration **phpMyAdmin**.
+- Pipeline CI/CD complet : tests, qualité, scan de sécurité, publication, déploiement.
 
 ## Architecture
-L'architecture est composée de plusieurs conteneurs Docker interconnectés qui fonctionnent ensemble pour créer un environnement d'application complet :
+
+Le projet se comprend en **deux parties** : ce qui tourne sur le serveur (l'application et ses services) et le chemin que suit le code pour y arriver (le pipeline CI/CD).
+
+### 1. Vue d'ensemble : ce qui tourne sur le serveur
+
+Tous les services sont des conteneurs Docker lancés ensemble par Docker Compose sur un serveur AWS EC2. Ils communiquent entre eux via un réseau privé (`app-network`). **Nginx (port 80) est la porte d'entrée de l'API ; phpMyAdmin (port 8080) sert uniquement à l'administration.**
 
 ![Diagramme d'Architecture](media/Architecture.png)
 
-### Composants Clés :
-- **Applications Spring Boot** (v1 et v2) : Deux versions d'une API REST pour la gestion des personnes
-- **Base de données MySQL** : Stocke les données de l'application avec initialisation automatique
-- **Proxy Inverse Nginx** : Dirige le trafic vers la version appropriée de l'application
-- **PHPMyAdmin** : Interface web pour la gestion de la base de données
-- **Service de Sauvegarde** : Solution de sauvegarde automatisée de la base de données
-- **SonarQube** : Plateforme d'analyse de la qualité du code
+ Composant | Rôle en clair |
+ --------- | ------------- |
+ **Nginx** | Porte d'entrée unique. Il reçoit toutes les requêtes et les redirige vers la bonne instance de l'application selon le début de l'adresse (`/v1/` ou `/v2/`). C'est ce qu'on appelle un *reverse proxy*. |
+ **Application v1 / v2** | Deux copies identiques de l'API Spring Boot. Elles ne se distinguent que par leur nom de version, ce qui permet de voir quelle instance répond. |
+ **MySQL** | Stocke l'annuaire (table `personnes`). Au premier démarrage, il se remplit automatiquement avec `database/monannuaire_mysql.sql`. |
+ **Backup** | Sauvegarde la base toutes les 12 heures dans le dossier `backups/`. |
+**phpMyAdmin** | Interface web pour consulter et administrer la base de données. |
 
-## Configuration du Réseau
-Tous les services communiquent via un réseau Docker de type bridge nommé `app-network`, qui :
-- Fournit une isolation par rapport aux réseaux externes
-- Permet aux conteneurs de se résoudre mutuellement par nom de service
-- Expose uniquement les ports nécessaires à la machine hôte
+### 2. Que se passe-t-il quand on appelle l'API ?
 
-## Configuration du Stockage
-Les données persistantes sont maintenues grâce aux volumes Docker :
-- `mysql_data` : Persiste les fichiers de la base de données MySQL
-- `sonarqube_data`, `sonarqube_logs`, `sonarqube_extensions` : Stockent les données SonarQube
-- Les fichiers de sauvegarde sont stockés dans un volume monté sur l'hôte pour un accès facile
+Exemple : un utilisateur demande la liste des personnes via `http://localhost/v1/api/persons`.
 
-## Détails des Services
+![Diagramme d'Architecture](media/Diagram.png)
 
-### Application Spring (v1 & v2)
-- **Image** : Construite à partir du Dockerfile dans ce dépôt
-- **Ports** : Accessibles via Nginx aux chemins `/v1/` et `/v2/`
-- **Variables d'Environnement** : Configurées pour la connexion à la base de données, informations de version
-- **Dépendances** : Dépend du service mysql-db
 
-### Base de Données MySQL
-- **Image** : mysql:5.7
-- **Port** : 3306 (accessible dans le réseau des conteneurs)
-- **Initialisation** : Charge automatiquement le schéma et les données d'exemple
-- **Volumes** : Persiste les données entre les redémarrages du conteneur
+1. L'utilisateur envoie sa requête à Nginx, la seule porte d'entrée.
+2. Nginx lit le début de l'adresse : `/v1/` désigne l'application v1, `/v2/` l'application v2.
+3. Nginx retire ce préfixe et transmet la requête à l'application choisie (`/api/persons`).
+4. L'application interroge la base MySQL.
+5. MySQL renvoie les données.
+6. L'application les met en forme en JSON et les renvoie à Nginx, qui les retransmet à l'utilisateur.
 
-### Proxy Inverse Nginx
-- **Image** : nginx:latest
-- **Port** : 80 (exposé à l'hôte)
-- **Configuration** : Dirige les requêtes vers la version appropriée de l'application
+### 3. Du code à la production : le chemin d'un `git push`
 
-### Service de Sauvegarde de la Base de Données
-- **Image** : mysql:5.7
-- **Fonction** : Crée des dumps SQL périodiques toutes les 12 heures
-- **Stockage** : Dumps stockés dans le répertoire ./backups
+À chaque `push` sur la branche `main`, tout est automatisé : plus aucune étape manuelle entre le code et le serveur.
 
-### PHPMyAdmin
-- **Image** : phpmyadmin/phpmyadmin:latest
-- **Port** : 8080 (exposé à l'hôte)
-- **Configuration** : Connecté à la base de données MySQL
+![Diagramme d'Architecture](media/Diagram2.png)
 
-### SonarQube
-- **Image** : sonarqube:latest
-- **Port** : 9000 (exposé à l'hôte)
-- **Fonction** : Fournit une analyse de la qualité du code
+1. **Tests et qualité** : le code est compilé et testé, puis SonarCloud l'analyse (bugs, vulnérabilités, code dupliqué). Si une étape échoue, le pipeline s'arrête ici.
+2. **Image Docker** : l'application est empaquetée dans une image, scannée par Trivy à la recherche de failles connues, puis publiée sur Docker Hub.
+3. **Déploiement** : GitHub se connecte en SSH au serveur EC2, y envoie les fichiers de configuration, puis demande à Docker Compose de télécharger la nouvelle image et de redémarrer les services.
 
-## Mise en Route
+Le détail de chaque étape est dans la section [Pipeline CI/CD](#pipeline-cicd).
 
-### Prérequis
-- Docker et Docker Compose installés sur votre système
-- Git pour cloner le dépôt
+## Stack technique
 
-### Installation
-1. Cloner le dépôt :
-```
-git clone https://github.com/OsZa99/DevopsOrchestration.git
-cd DevopsOrchestration
+| Domaine            | Technologies                                              |
+| ------------------ | --------------------------------------------------------- |
+| Langage / Runtime  | Java 17                                                   |
+| Framework          | Spring Boot 3.5 (Web, Data JPA)                           |
+| Base de données    | MySQL 5.7 (production), H2 en mémoire (tests)             |
+| Build              | Maven 3.9 (Maven Wrapper inclus)                          |
+| Conteneurisation   | Docker (build multi-étapes), Docker Compose               |
+| Reverse proxy      | Nginx                                                     |
+| CI/CD              | GitHub Actions                                            |
+| Qualité / Sécurité | SonarCloud, Trivy                                         |
+| Hébergement        | AWS EC2, Docker Hub                                       |
+
+## Prérequis
+
+- [Docker](https://docs.docker.com/get-docker/) et Docker Compose v2
+- (Développement local) JDK 17 et Maven 3.9+
+
+## Démarrage rapide
+
+### 1. Cloner le dépôt
+
+```bash
+git clone https://github.com/OsZa99/devsecops-pipeline-spring-docker.git
+cd devsecops-pipeline-spring-docker
 ```
 
-2. Démarrer les services :
-```
-docker-compose up -d
-```
+### 2. Créer le fichier `.env`
 
-3. Accéder aux applications :
-   - Application Spring v1 : http://localhost/v1/
-   - Application Spring v2 : http://localhost/v2/
-   - PHPMyAdmin : http://localhost:8080
-   - SonarQube : http://localhost:9000
-
-### Exécution des Tests
-Pour vérifier les points de terminaison de l'API REST :
-```
-curl http://localhost/v1/api/persons  # Accès aux données de personnes via v1
-curl http://localhost/v2/api/persons  # Accès aux données de personnes via v2
-curl http://localhost/v1/api/version  # Vérifier les infos de version pour v1
-curl http://localhost/v2/api/version  # Vérifier les infos de version pour v2
+```env
+DB_NAME=test
+DB_USER=root
+DB_PASSWORD=un_mot_de_passe
 ```
 
-### Opérations Courantes
+> **Important** : `DB_USER` doit valoir `root`. Le conteneur MySQL n'est configuré qu'avec `MYSQL_ROOT_PASSWORD`, aucun autre utilisateur n'est créé automatiquement.
+> Le fichier `.env` est ignoré par Git : ne le versionnez jamais.
 
-#### Afficher l'État des Services
-```
-docker-compose ps
-```
+### 3. (Optionnel) Construire l'image localement
 
-#### Vérifier les Logs des Services
-```
-docker-compose logs [nom_du_service]
-```
+Par défaut, Compose récupère l'image depuis Docker Hub. Pour utiliser votre propre build :
 
-#### Arrêter les Services
-```
-docker-compose down
+```bash
+docker build -t osza/devops-app:latest .
 ```
 
-#### Reconstruire les Services
+### 4. Lancer la stack
+
+```bash
+docker compose up -d
 ```
-docker-compose up --build -d
+
+### 5. Vérifier
+
+```
+http://localhost/v1/api/version
+http://localhost/v2/api/persons
 ```
 
-## Intégration SonarQube
-L'application Spring Boot inclut des capacités d'analyse SonarQube :
+phpMyAdmin est disponible sur <http://localhost:8080>.
 
-1. Connectez-vous à SonarQube (http://localhost:9000) avec :
-   - Nom d'utilisateur : admin
-   - Mot de passe : Projetdevops2024@
+Pour arrêter la stack : `docker compose down` (ajoutez `-v` pour supprimer également le volume de données).
 
-## Gestion de la Base de Données
-- Les données initiales sont chargées depuis `database/monannuaire_mysql.sql`
-- Les sauvegardes de la base de données sont créées toutes les 12 heures dans le répertoire `backups`
-- Accédez à la base de données via PHPMyAdmin à http://localhost:8080
+## Configuration
 
-## Implémentation Technique
+Les paramètres sont définis dans `src/main/resources/application.properties` et surchargeables par variables d'environnement.
 
-### Packaging de l'Application
-L'application Spring Boot est packagée pendant la construction de l'image Docker :
-- Processus de construction Docker multi-étapes
-- Compilation Maven dans un conteneur de construction
-- Conteneur d'exécution optimisé avec uniquement les dépendances requises
+| Variable                         | Description                                  | Valeur par défaut |
+| -------------------------------- | -------------------------------------------- | ----------------- |
+| `DB_HOST`                        | Hôte MySQL                                   | `mysql-db`        |
+| `DB_NAME`                        | Nom de la base                               | `test`            |
+| `DB_USER`                        | Utilisateur MySQL                            | `root`            |
+| `DB_PASSWORD`                    | Mot de passe MySQL                           | *(vide)*          |
+| `SPRING_DATASOURCE_URL`          | URL JDBC complète (prioritaire si définie)   | –                 |
+| `APP_VERSION`                    | Version affichée par `/api/version`          | –                 |
+| `APP_USER`                       | Utilisateur affiché par `/api/version`       | –                 |
 
-### Sauvegarde de la Base de Données
-La sauvegarde automatique de la base de données est implémentée via :
-- Un conteneur MySQL dédié
-- Des dumps programmés avec horodatage
-- Montage de volume pour un stockage persistant
+Notes :
 
-### Évolution de l'Infrastructure
-Le projet prend en charge plusieurs versions d'application grâce à :
-- Un routage basé sur les chemins Nginx
-- Une configuration basée sur les variables d'environnement
-- Une base de données partagée pour un accès transparent aux données
+- Le schéma n'est **pas** géré par Hibernate (`ddl-auto=none`) : il est créé à l'initialisation du conteneur MySQL à partir de `database/monannuaire_mysql.sql`.
+- Dans `docker-compose.yaml`, `APP_VERSION` et `APP_USER` différencient les instances `v1` et `v2`.
+
+## API
+
+L'application écoute sur le port `10000`. Via Nginx, les routes sont préfixées par `/v1/` ou `/v2/`.
+
+## Pipeline CI/CD
+
+Le workflow [`ci.yml`](.github/workflows/ci.yml) se déclenche à chaque `push` sur la branche `main` et enchaîne trois jobs séquentiels :
+
+| # | Job                                  | Étapes principales                                                                                                                |
+| - | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| 1 | **Tests, Sonar & Quality**           | Checkout, installation de Java, `mvn clean verify`, analyse **SonarCloud**, archivage des rapports de tests                       |
+| 2 | **Docker Build, Security Scan & Push** | Connexion Docker Hub, build de l'image (tags `latest` et SHA du commit), scan **Trivy** (CRITICAL/HIGH), publication sur Docker Hub |
+| 3 | **Deploy to AWS EC2**                | Génération du `.env`, copie des fichiers de déploiement via SCP, `docker compose pull` puis `docker compose up -d` via SSH        |
+
+Chaque image est publiée avec deux tags : `latest` et le SHA du commit, ce qui permet la traçabilité et le rollback.
+
+### Secrets GitHub requis
+
+À configurer dans **Settings → Secrets and variables → Actions** :
+
+| Secret               | Utilisation                                  |
+| -------------------- | -------------------------------------------- |
+| `SONAR_TOKEN`        | Authentification SonarCloud                  |
+| `DOCKERHUB_USERNAME` | Compte Docker Hub                            |
+| `DOCKERHUB_TOKEN`    | Token d'accès Docker Hub                     |
+| `DB_NAME`            | Nom de la base (généré dans le `.env`)       |
+| `DB_USER`            | Utilisateur MySQL (doit valoir `root`)       |
+| `DB_PASSWORD`        | Mot de passe MySQL                           |
+| `EC2_HOST`           | Adresse de l'instance EC2                    |
+| `EC2_USERNAME`       | Utilisateur SSH (ex. `ubuntu`)               |
+| `EC2_SSH_KEY`        | Clé privée SSH                               |
+| `EC2_SSH_PORT`       | Port SSH                                     |
+
+## Déploiement sur AWS EC2
+
+Prérequis côté serveur :
+
+- Instance EC2 Ubuntu avec **Docker** et le plugin **Docker Compose** installés.
+- Port **80** ouvert dans le Security Group (ouvrez `8080` et `3306` uniquement si nécessaire, de préférence restreints à votre IP).
+- Accès SSH configuré avec la clé associée au secret `EC2_SSH_KEY`.
+
+Le pipeline dépose les fichiers `docker-compose.yaml`, `nginx.conf`, `database/` et `.env` dans `/home/ubuntu/devops-app`, puis relance les services.
+
+Une fois le pipeline exécuté avec succès, l'application est accessible via l'IP publique du serveur AWS EC2. Vous pouvez tester le routage de Nginx et la communication avec la base de données via ces terminaux d'API :
+
+1. Tester la version 1 de l'API :
+http://<Public_IPv4_adress>/v1/api/version
+
+2. Tester la version 2 de l'API (Routage Nginx) :
+http://<Public_IPv4_adress>/v2/api/version
+
+3. Interroger la base de données MySQL :
+http://<Public_IPv4_adress>/v1/api/persons
+
+(L'interface d'administration de la base de données est accessible sur http://<Public_IPv4_adress>:8080)
+
+## Sauvegarde et restauration
+
+Le service `backup` exécute `mysqldump` **toutes les 12 heures** et écrit les fichiers dans `./backups/` au format :
+
+```
+dump-AAAA-MM-JJ-HH-MM.sql
+```
 
 ## Auteur
-- OSSAMA ZARANI
+
+Ossama Zarani
